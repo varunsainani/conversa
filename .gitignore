@@ -25,3 +25,8 @@ npm-debug.log*
 # build artifacts / local screenshots helpers
 /screenshots
 shots.cjs
+
+# dev screenshot/audit helpers
+auditpass.cjs
+diag.cjs
+reshoot-inbox.cjs
