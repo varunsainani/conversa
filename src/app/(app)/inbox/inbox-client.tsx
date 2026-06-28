@@ -83,13 +83,19 @@ export function InboxClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const rtTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onRealtime = useCallback(() => {
-    refreshList();
-    const id = selectedRef.current;
-    if (id) {
-      A.getMessagesAction(id).then(setMessages).catch(() => {});
-      A.getConversationAction(id).then(setDetail).catch(() => {});
-    }
+    // Coalesce bursts of realtime events (one send writes several rows) into a
+    // single refresh so we don't fan out a dozen refetches per change.
+    if (rtTimer.current) clearTimeout(rtTimer.current);
+    rtTimer.current = setTimeout(() => {
+      refreshList();
+      const id = selectedRef.current;
+      if (id) {
+        A.getMessagesAction(id).then(setMessages).catch(() => {});
+        A.getConversationAction(id).then(setDetail).catch(() => {});
+      }
+    }, 400);
   }, [refreshList]);
   useRealtime(["message", "conversation", "contact"], onRealtime);
 
