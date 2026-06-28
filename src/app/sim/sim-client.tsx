@@ -27,6 +27,7 @@ export function SimClient({ channelId, orgName }: { channelId: string; orgName: 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const localId = useRef(0);
 
   useEffect(() => {
     const savedWa = localStorage.getItem(`sim_wa_${channelId}`);
@@ -80,7 +81,13 @@ export function SimClient({ channelId, orgName }: { channelId: string; orgName: 
     // Optimistic echo.
     setMessages((m) => [
       ...m,
-      { id: `local-${Date.now()}`, direction: "inbound", via: "customer", body, createdAt: new Date().toISOString() },
+      {
+        id: `local-${localId.current++}`,
+        direction: "inbound",
+        via: "customer",
+        body,
+        createdAt: new Date().toISOString(),
+      },
     ]);
     try {
       await fetch("/api/sim/inbound", {

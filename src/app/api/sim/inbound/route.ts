@@ -8,9 +8,26 @@ export const dynamic = "force-dynamic";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Best-effort, per-instance rate limit (serverless instances are not shared,
+// so this is a soft guard against spam, not a hard global limit).
+const RL = new Map<string, { count: number; resetAt: number }>();
+function rateLimited(ip: string): boolean {
+  const now = Date.now();
+  const e = RL.get(ip);
+  if (!e || e.resetAt < now) {
+    RL.set(ip, { count: 1, resetAt: now + 60_000 });
+    return false;
+  }
+  e.count += 1;
+  return e.count > 30;
+}
+
 // Public endpoint: the /sim customer widget posts an inbound message here,
 // driving the exact same ingest pipeline a real WhatsApp webhook would.
 export async function POST(req: Request) {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anon";
+  if (rateLimited(ip)) return Response.json({ error: "rate_limited" }, { status: 429 });
+
   let body: { channelId?: string; waId?: string; name?: string; text?: string };
   try {
     body = await req.json();
