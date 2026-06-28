@@ -16,97 +16,97 @@ export async function ingestInbound(
   const [ch] = await db.select().from(channel).where(eq(channel.id, input.channelId));
   if (!ch) throw new ActionError("channel_not_found");
   const orgId = ch.orgId;
+  const now = new Date();
 
-  // Idempotency ledger (provider + message id is unique).
-  if (input.providerMessageId) {
-    const inserted = await db
-      .insert(webhookEvent)
-      .values({
-        provider: input.provider,
-        externalId: input.providerMessageId,
-        orgId,
-        payload: input.payload ?? {},
-      })
-      .onConflictDoNothing()
-      .returning({ id: webhookEvent.id });
-    if (inserted.length === 0) return { conversationId: "", duplicate: true };
-  }
+  // Persist atomically: the idempotency record only commits if the whole
+  // message is stored, so a provider retry after a mid-pipeline failure
+  // reprocesses instead of silently dropping the message.
+  const result = await db.transaction(async (tx) => {
+    if (input.providerMessageId) {
+      const inserted = await tx
+        .insert(webhookEvent)
+        .values({
+          provider: input.provider,
+          externalId: input.providerMessageId,
+          orgId,
+          payload: input.payload ?? {},
+        })
+        .onConflictDoNothing()
+        .returning({ id: webhookEvent.id });
+      if (inserted.length === 0) {
+        return { duplicate: true as const, conversationId: "", autopilot: false, contactId: "" };
+      }
+    }
 
-  // Upsert the contact (the lead).
-  const [existing] = await db
-    .select()
-    .from(contact)
-    .where(and(eq(contact.orgId, orgId), eq(contact.waId, input.waId)));
-  let contactRow = existing;
-  if (!contactRow) {
-    [contactRow] = await db
+    // Atomic contact upsert on the (org, waId) unique key.
+    const [contactRow] = await tx
       .insert(contact)
-      .values({
-        orgId,
-        waId: input.waId,
-        name: input.name?.trim() || input.waId,
-        lastContactAt: new Date(),
+      .values({ orgId, waId: input.waId, name: input.name?.trim() || input.waId, lastContactAt: now })
+      .onConflictDoUpdate({
+        target: [contact.orgId, contact.waId],
+        set: { lastContactAt: now },
       })
       .returning();
-  } else {
-    await db
-      .update(contact)
-      .set({
-        lastContactAt: new Date(),
-        ...(input.name && !contactRow.name ? { name: input.name } : {}),
-      })
-      .where(eq(contact.id, contactRow.id));
-  }
 
-  // Find the latest conversation or open a new one.
-  const [found] = await db
-    .select()
-    .from(conversation)
-    .where(and(eq(conversation.orgId, orgId), eq(conversation.contactId, contactRow!.id)))
-    .orderBy(desc(conversation.lastMessageAt))
-    .limit(1);
+    const [found] = await tx
+      .select()
+      .from(conversation)
+      .where(and(eq(conversation.orgId, orgId), eq(conversation.contactId, contactRow!.id)))
+      .orderBy(desc(conversation.lastMessageAt))
+      .limit(1);
 
-  let conv = found;
-  if (!conv) {
-    [conv] = await db
-      .insert(conversation)
-      .values({
-        orgId,
-        contactId: contactRow!.id,
-        channelId: ch.id,
-        status: "open",
-        lastMessagePreview: input.text.slice(0, 120),
-        lastMessageAt: new Date(),
-        unreadCount: 1,
-      })
-      .returning();
-  } else {
-    await db
-      .update(conversation)
-      .set({
-        status: conv.status === "closed" ? "open" : conv.status,
-        lastMessagePreview: input.text.slice(0, 120),
-        lastMessageAt: new Date(),
-        unreadCount: sql`${conversation.unreadCount} + 1`,
-      })
-      .where(eq(conversation.id, conv.id));
-  }
+    let conv = found;
+    if (!conv) {
+      const [orgRow] = await tx
+        .select({ autopilotDefault: org.autopilotDefault })
+        .from(org)
+        .where(eq(org.id, orgId));
+      [conv] = await tx
+        .insert(conversation)
+        .values({
+          orgId,
+          contactId: contactRow!.id,
+          channelId: ch.id,
+          status: "open",
+          aiAutopilot: orgRow?.autopilotDefault ?? false,
+          lastMessagePreview: input.text.slice(0, 120),
+          lastMessageAt: now,
+          unreadCount: 1,
+        })
+        .returning();
+    } else {
+      await tx
+        .update(conversation)
+        .set({
+          status: conv.status === "closed" ? "open" : conv.status,
+          lastMessagePreview: input.text.slice(0, 120),
+          lastMessageAt: now,
+          unreadCount: sql`${conversation.unreadCount} + 1`,
+        })
+        .where(eq(conversation.id, conv.id));
+    }
 
-  await db.insert(message).values({
-    orgId,
-    conversationId: conv!.id,
-    direction: "inbound",
-    via: "customer",
-    body: input.text,
-    status: "received",
-    waMessageId: input.providerMessageId ?? null,
+    await tx.insert(message).values({
+      orgId,
+      conversationId: conv!.id,
+      direction: "inbound",
+      via: "customer",
+      body: input.text,
+      status: "received",
+      waMessageId: input.providerMessageId ?? null,
+    });
+
+    return {
+      duplicate: false as const,
+      conversationId: conv!.id,
+      autopilot: conv!.aiAutopilot,
+      contactId: contactRow!.id,
+    };
   });
 
-  if (conv!.aiAutopilot) {
-    await maybeAutoReply(orgId, conv!.id, contactRow!.id);
-  }
-
-  return { conversationId: conv!.id };
+  if (result.duplicate) return { conversationId: "", duplicate: true };
+  if (result.autopilot) await maybeAutoReply(orgId, result.conversationId, result.contactId);
+  return { conversationId: result.conversationId };
 }
 
 async function maybeAutoReply(orgId: string, conversationId: string, contactId: string) {
