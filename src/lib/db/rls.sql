@@ -33,13 +33,14 @@ drop policy if exists org_select on public.org;
 create policy org_select on public.org for select to authenticated
   using (id = public.auth_org_id());
 
--- profile: read profiles in your org; update your own row.
+-- profile: read profiles in your org. NO client UPDATE policy: profile edits go
+-- through admin server actions (service role). A client UPDATE policy can only
+-- constrain the row identity, not which columns change, so allowing it would let
+-- a user rewrite their own role/org_id (privilege escalation + cross-org pivot).
 drop policy if exists profile_select on public.profile;
 create policy profile_select on public.profile for select to authenticated
   using (org_id = public.auth_org_id());
 drop policy if exists profile_update_self on public.profile;
-create policy profile_update_self on public.profile for update to authenticated
-  using (id = auth.uid()) with check (id = auth.uid());
 
 -- Org-scoped read policies for the client/realtime path.
 drop policy if exists channel_select on public.channel;
