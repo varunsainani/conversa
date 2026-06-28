@@ -1,5 +1,8 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import { defineConfig } from "drizzle-kit";
+
+dotenv.config({ path: ".env.local" });
+dotenv.config();
 
 export default defineConfig({
   schema: "./src/lib/db/schema.ts",
@@ -11,5 +14,5 @@ export default defineConfig({
   // Only manage our own tables; never touch Supabase-managed schemas.
   schemaFilter: ["public"],
   verbose: true,
-  strict: true,
+  strict: false,
 });
