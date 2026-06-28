@@ -5,13 +5,24 @@ import { channel, contact, conversation, message } from "@/lib/db/schema";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Public read for the /sim customer widget: the customer's own conversation
 // thread (their messages + the business replies), simulator channels only.
 export async function GET(req: Request) {
+  try {
+    return await handle(req);
+  } catch (e) {
+    console.error("[sim/thread]", e);
+    return Response.json({ messages: [] });
+  }
+}
+
+async function handle(req: Request) {
   const url = new URL(req.url);
   const channelId = url.searchParams.get("channelId");
   const waId = url.searchParams.get("waId");
-  if (!channelId || !waId) return Response.json({ messages: [] });
+  if (!channelId || !waId || !UUID.test(channelId)) return Response.json({ messages: [] });
 
   const [ch] = await db.select().from(channel).where(eq(channel.id, channelId));
   if (!ch || ch.kind !== "simulator") return Response.json({ messages: [] });
