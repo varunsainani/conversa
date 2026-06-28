@@ -66,10 +66,18 @@ export function InboxClient({
   const openConversation = useCallback(async (id: string) => {
     setSelectedId(id);
     setSummary(null);
+    const load = () => Promise.all([A.getConversationAction(id), A.getMessagesAction(id)]);
     try {
-      const [d, m] = await Promise.all([A.getConversationAction(id), A.getMessagesAction(id)]);
-      setDetail(d);
-      setMessages(m);
+      let pair;
+      try {
+        pair = await load();
+      } catch {
+        // Retry once: the first server action on a cold serverless start can fail.
+        await new Promise((r) => setTimeout(r, 700));
+        pair = await load();
+      }
+      setDetail(pair[0]);
+      setMessages(pair[1]);
       await A.markReadAction(id);
       refreshList();
     } catch {
